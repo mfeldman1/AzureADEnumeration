@@ -127,14 +127,6 @@ def run_get_credential_type(email: str) -> dict | None:
         "flowToken": "",
         "isAccessPassSupported": True,
     }
-    codes = {
-        0: "User exists (Azure IdP)",
-        1: "User does not exist",
-        2: "Invalid request",
-        4: "Server error",
-        5: "User exists (Federated IdP)",
-        6: "User exists (External non-MS IdP)",
-    }
     try:
         r = requests.post(
             url,
@@ -144,17 +136,17 @@ def run_get_credential_type(email: str) -> dict | None:
         )
         r.raise_for_status()
         data = r.json()
-        code = data.get("IfExistsResult", data.get("IfExistsResult", "?"))
+        code = data.get("IfExistsResult", "?")
         print("Response:", json.dumps(data, indent=2))
-        print("IfExistsResult:", code, "->", codes.get(code, "Unknown"))
+        print("IfExistsResult:", code, "->", CREDENTIAL_TYPE_LABELS.get(code, "Unknown"))
         return data
     except Exception as e:
         print(f"GetCredentialType error: {e}")
         return None
 
 
-def run_onedrive_enum(email: str, domain: str, tenant_override: str | None = None) -> None:
-    """5. OneDrive user enumeration (HEAD request)."""
+def run_onedrive_enum(email: str, domain: str, tenant_override: str | None = None) -> str:
+    """5. OneDrive user enumeration (HEAD request). Returns short summary line."""
     section("5. OneDrive User Enumeration")
     tenant = tenant_override or tenant_name_from_domain(domain)
     user_path = user_path_from_email(email)
@@ -170,18 +162,23 @@ def run_onedrive_enum(email: str, domain: str, tenant_override: str | None = Non
         sc = r.status_code
         if sc == 200:
             print("Result: 200 -> User exists, OneDrive accessible")
+            return "200 – user exists, OneDrive accessible"
         elif sc in (401, 403):
             print("Result: {} -> User exists, access denied".format(sc))
+            return f"{sc} – user exists, access denied"
         elif sc == 404:
             print("Result: 404 -> User does not exist")
+            return "404 – user does not exist"
         else:
             print(f"Result: HTTP {sc}")
+            return f"HTTP {sc}"
     except Exception as e:
         print(f"OneDrive probe error: {e}")
+        return f"Error: {e}"
 
 
-def run_autodiscover_v2(email: str) -> None:
-    """9. Autodiscover V2 (JSON) user enumeration."""
+def run_autodiscover_v2(email: str) -> str:
+    """9. Autodiscover V2 (JSON) user enumeration. Returns short summary line."""
     section("9. Autodiscover V2 Enumeration")
     url = (
         "https://autodiscover-s.outlook.com/autodiscover/autodiscover.json"
@@ -197,14 +194,19 @@ def run_autodiscover_v2(email: str) -> None:
         sc = r.status_code
         if sc == 200:
             print("Result: 200 -> User exists")
+            return "200 – user exists"
         elif sc == 302:
             print("Result: 302 (redirect) -> User does not exist")
+            return "302 – user does not exist"
         elif sc in (401, 403):
             print("Result: {} -> User exists (auth required)".format(sc))
+            return f"{sc} – user exists (auth required)"
         else:
             print(f"Result: HTTP {sc}")
+            return f"HTTP {sc}"
     except Exception as e:
         print(f"Autodiscover V2 error: {e}")
+        return f"Error: {e}"
 
 
 def _do_autodiscover_v1_request(url: str, body: str) -> requests.Response:
@@ -219,8 +221,8 @@ def _do_autodiscover_v1_request(url: str, body: str) -> requests.Response:
     )
 
 
-def run_autodiscover_v1(email: str, domain: str) -> None:
-    """10. Autodiscover V1 (XML) user enumeration. Run in thread to cap DNS/connect hang."""
+def run_autodiscover_v1(email: str, domain: str) -> str:
+    """10. Autodiscover V1 (XML) user enumeration. Run in thread to cap DNS/connect hang. Returns short summary."""
     section("10. Autodiscover V1 Enumeration")
     url = f"https://autodiscover.{domain}/autodiscover/autodiscover.xml"
     body = (
@@ -243,14 +245,78 @@ def run_autodiscover_v1(email: str, domain: str) -> None:
         print(f"HTTP {sc}")
         if "RedirectAddr" in text or "NoError" in text:
             print("Indicators: User may exist (RedirectAddr/NoError)")
+            return f"HTTP {sc} – user may exist"
         elif "InvalidUser" in text:
             print("Indicators: User does not exist (InvalidUser)")
+            return f"HTTP {sc} – user does not exist"
         else:
             print("Response snippet:", text[:300])
+            return f"HTTP {sc}"
     except FuturesTimeoutError:
         print("Autodiscover V1 error: timed out after 12s (DNS or server may be slow/unreachable)")
+        return "Timed out (DNS/server unreachable)"
     except Exception as e:
         print(f"Autodiscover V1 error: {e}")
+        return f"Error: {e}"
+
+
+CREDENTIAL_TYPE_LABELS = {
+    0: "User exists (Azure IdP)",
+    1: "User does not exist",
+    2: "Invalid request",
+    4: "Server error",
+    5: "User exists (Federated IdP)",
+    6: "User exists (External non-MS IdP)",
+}
+
+
+def print_summary(
+    email: str,
+    domain: str,
+    tenant_data: dict | None,
+    realm_data: dict | None,
+    credential_data: dict | None,
+    onedrive_summary: str,
+    autodiscover_v2_summary: str,
+    autodiscover_v1_summary: str,
+) -> None:
+    """Print a concise summary of all enumeration results."""
+    section("SUMMARY")
+    print(f"  Email:        {email}")
+    print(f"  Domain:       {domain}")
+    print()
+
+    if tenant_data and tenant_data.get("azmap"):
+        az = tenant_data["azmap"]
+        print(f"  Tenant:       {az.get('displayName', '—')}")
+        print(f"  Tenant ID:    {az.get('tenantId', '—')}")
+        print(f"  Country:      {az.get('countryCode', '—')}")
+    else:
+        print("  Tenant:       (not found or error)")
+    print()
+
+    if realm_data:
+        ns = realm_data.get("NameSpaceType", "—")
+        brand = realm_data.get("FederationBrandName", "—")
+        print(f"  Realm:        {ns}")
+        print(f"  Brand:        {brand}")
+    else:
+        print("  Realm:        (error or not found)")
+    print()
+
+    if credential_data is not None and "IfExistsResult" in credential_data:
+        code = credential_data["IfExistsResult"]
+        print(f"  GetCredentialType: {CREDENTIAL_TYPE_LABELS.get(code, code)}")
+    else:
+        print("  GetCredentialType: (error or not found)")
+    print()
+
+    print(f"  OneDrive:         {onedrive_summary}")
+    print(f"  Autodiscover V2:  {autodiscover_v2_summary}")
+    print(f"  Autodiscover V1:  {autodiscover_v1_summary}")
+    print()
+    print("  Enumeration complete.")
+    sys.stdout.flush()
 
 
 def main() -> None:
@@ -267,22 +333,28 @@ def main() -> None:
         tenant_id = az.get("tenantId")
         tenant_display = az.get("displayName")
 
-    run_domain_realm(email, domain)
-    run_get_credential_type(email)
+    realm_data = run_domain_realm(email, domain)
+    credential_data = run_get_credential_type(email)
 
     # OneDrive: prefer tenant name from azmap if available (some APIs return a slug)
     tenant_for_onedrive = None
     if tenant_display:
         tenant_for_onedrive = re.sub(r"[^a-z0-9]", "", tenant_display.lower())[:30] or None
-    run_onedrive_enum(email, domain, tenant_override=tenant_for_onedrive)
+    onedrive_summary = run_onedrive_enum(email, domain, tenant_override=tenant_for_onedrive)
 
-    run_autodiscover_v2(email)
-    run_autodiscover_v1(email, domain)
+    autodiscover_v2_summary = run_autodiscover_v2(email)
+    autodiscover_v1_summary = run_autodiscover_v1(email, domain)
 
-    print("\n" + "=" * 60)
-    print("Enumeration complete.")
-    print("=" * 60)
-    sys.stdout.flush()
+    print_summary(
+        email,
+        domain,
+        tenant_data,
+        realm_data,
+        credential_data,
+        onedrive_summary,
+        autodiscover_v2_summary,
+        autodiscover_v1_summary,
+    )
 
 
 if __name__ == "__main__":
