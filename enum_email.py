@@ -2,13 +2,12 @@
 """
 Azure AD / Entra ID enumeration for a given email address.
 Runs the process described in this repo's README (tenant discovery, domain realm,
-GetCredentialType, OneDrive probe, Autodiscover V2/V1).
+GetCredentialType, OneDrive probe, Autodiscover V2).
 """
 
 import json
 import re
 import sys
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from urllib.parse import quote
 
 try:
@@ -22,8 +21,6 @@ DEFAULT_EMAIL = "jcoan@cybermaxx.com"
 CONNECT_TIMEOUT = 5
 READ_TIMEOUT = 10
 REQUEST_TIMEOUT = (CONNECT_TIMEOUT, READ_TIMEOUT)
-# Shorter for Autodiscover V1 (hits custom domain that often doesn't exist)
-AUTODISCOVER_V1_TIMEOUT = (4, 6)
 USER_AGENT = "Mozilla/5.0 (compatible; AzureADEnum/1.0)"
 
 
@@ -209,57 +206,6 @@ def run_autodiscover_v2(email: str) -> str:
         return f"Error: {e}"
 
 
-def _do_autodiscover_v1_request(url: str, body: str) -> requests.Response:
-    return requests.post(
-        url,
-        data=body,
-        timeout=AUTODISCOVER_V1_TIMEOUT,
-        headers={
-            "User-Agent": USER_AGENT,
-            "Content-Type": "text/xml; charset=utf-8",
-        },
-    )
-
-
-def run_autodiscover_v1(email: str, domain: str) -> str:
-    """10. Autodiscover V1 (XML) user enumeration. Run in thread to cap DNS/connect hang. Returns short summary."""
-    section("10. Autodiscover V1 Enumeration")
-    url = f"https://autodiscover.{domain}/autodiscover/autodiscover.xml"
-    body = (
-        '<?xml version="1.0" encoding="utf-8"?>\n'
-        '<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/requestschema/2006">\n'
-        "  <Request>\n"
-        f"    <EMailAddress>{email}</EMailAddress>\n"
-        "    <AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a</AcceptableResponseSchema>\n"
-        "  </Request>\n"
-        "</Autodiscover>"
-    )
-    print(f"Requesting {url} (max 12s)...")
-    sys.stdout.flush()
-    try:
-        with ThreadPoolExecutor(max_workers=1) as ex:
-            fut = ex.submit(_do_autodiscover_v1_request, url, body)
-            r = fut.result(timeout=12)
-        sc = r.status_code
-        text = (r.text or "")[:500]
-        print(f"HTTP {sc}")
-        if "RedirectAddr" in text or "NoError" in text:
-            print("Indicators: User may exist (RedirectAddr/NoError)")
-            return f"HTTP {sc} – user may exist"
-        elif "InvalidUser" in text:
-            print("Indicators: User does not exist (InvalidUser)")
-            return f"HTTP {sc} – user does not exist"
-        else:
-            print("Response snippet:", text[:300])
-            return f"HTTP {sc}"
-    except FuturesTimeoutError:
-        print("Autodiscover V1 error: timed out after 12s (DNS or server may be slow/unreachable)")
-        return "Timed out (DNS/server unreachable)"
-    except Exception as e:
-        print(f"Autodiscover V1 error: {e}")
-        return f"Error: {e}"
-
-
 CREDENTIAL_TYPE_LABELS = {
     0: "User exists (Azure IdP)",
     1: "User does not exist",
@@ -278,7 +224,6 @@ def print_summary(
     credential_data: dict | None,
     onedrive_summary: str,
     autodiscover_v2_summary: str,
-    autodiscover_v1_summary: str,
 ) -> None:
     """Print a concise summary of all enumeration results."""
     section("SUMMARY")
@@ -313,7 +258,6 @@ def print_summary(
 
     print(f"  OneDrive:         {onedrive_summary}")
     print(f"  Autodiscover V2:  {autodiscover_v2_summary}")
-    print(f"  Autodiscover V1:  {autodiscover_v1_summary}")
     print()
     print("  Enumeration complete.")
     sys.stdout.flush()
@@ -343,7 +287,6 @@ def main() -> None:
     onedrive_summary = run_onedrive_enum(email, domain, tenant_override=tenant_for_onedrive)
 
     autodiscover_v2_summary = run_autodiscover_v2(email)
-    autodiscover_v1_summary = run_autodiscover_v1(email, domain)
 
     print_summary(
         email,
@@ -353,7 +296,6 @@ def main() -> None:
         credential_data,
         onedrive_summary,
         autodiscover_v2_summary,
-        autodiscover_v1_summary,
     )
 
 
